@@ -264,6 +264,14 @@ class XbowClient:
         org_id = org_id or self.org_id
         return list(self._paginate(f"{self.base}/organizations/{org_id}/assets"))
 
+    def list_asset_findings(self, asset_id: str) -> Generator[dict, None, None]:
+        """Yield findings for an asset."""
+        yield from self._paginate(f"{self.base}/assets/{asset_id}/findings")
+
+    def list_asset_assessments(self, asset_id: str) -> Generator[dict, None, None]:
+        """Yield assessments for an asset."""
+        yield from self._paginate(f"{self.base}/assets/{asset_id}/assessments")
+
     def safe_asset_payload(self, asset: dict) -> dict:
         """Return a copy of an asset payload with sensitive fields removed."""
         safe = dict(asset or {})
@@ -290,7 +298,7 @@ def collect_finding_events(
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
-        for finding in xbow._paginate(f"{XBOW_API_BASE}/assets/{asset_id}/findings"):
+        for finding in xbow.list_asset_findings(asset_id):
             finding_id = finding["id"]
             record_ts = finding.get("updatedAt") or finding.get("createdAt")
 
@@ -429,9 +437,7 @@ def collect_assessment_events(
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
-        for assessment in xbow._paginate(
-            f"{XBOW_API_BASE}/assets/{asset_id}/assessments"
-        ):
+        for assessment in xbow.list_asset_assessments(asset_id):
             assessment_id = assessment["id"]
             record_ts = assessment.get("updatedAt") or assessment.get("createdAt")
 
