@@ -28,18 +28,22 @@ Application Settings (configured automatically by the ARM template):
     AzureWebJobsStorage     – Azure Storage connection string (for state persistence)
 """
 
+import logging
 import json
 import os
-import logging
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Generator
+from typing import Any, Generator
 
 import requests
 import azure.functions as func
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceExistsError,
+)
 from azure.identity import ClientSecretCredential
 from azure.monitor.ingestion import LogsIngestionClient
-from azure.core.exceptions import HttpResponseError, ClientAuthenticationError
 from azure.storage.blob import BlobServiceClient, BlobClient
 
 
@@ -83,16 +87,18 @@ class SyncState:
     assessments: dict[str, str] = field(default_factory=dict)
     """asset_id → last_seen_updatedAt for assessments list fetch"""
 
+    @staticmethod
     def _get_blob_client() -> BlobClient:
         """Return a BlobClient for the sync state blob."""
         svc = BlobServiceClient.from_connection_string(STORAGE_CONN_STR)
         container = svc.get_container_client(STATE_CONTAINER)
         try:
             container.create_container()
-        except Exception:
-            pass  # already exists
+        except ResourceExistsError:
+            pass
         return svc.get_blob_client(container=STATE_CONTAINER, blob=STATE_BLOB)
 
+    @staticmethod
     def load_state() -> "SyncState":
         """Load sync state from blob storage. Returns empty state on first run."""
         try:
@@ -143,13 +149,13 @@ def _is_newer(record_ts: str | None, last_seen_ts: str | None) -> bool:
     """
     if last_seen_ts is None:
         return True
-    r = _parse_ts(record_ts)
-    l = _parse_ts(last_seen_ts)
-    if r is None:
+    record_dt = _parse_ts(record_ts)
+    last_seen_dt = _parse_ts(last_seen_ts)
+    if record_dt is None:
         return True
-    if l is None:
+    if last_seen_dt is None:
         return True
-    return r > l
+    return record_dt > last_seen_dt
 
 
 def _max_ts(a: str | None, b: str | None) -> str | None:
@@ -195,23 +201,29 @@ class XbowClient:
             logging.error(
                 "API version is out of date, please update the XBOW_API_VERSION"
             )
-            raise Exception("Bad Request")
+            raise RuntimeError("Bad Request")
         elif resp.status_code in [401, 403]:
             logging.error(
                 "Permissions issue, make sure the XBOW_API_TOKEN and XBOW_ORG_ID match"
             )
-            raise Exception("Permission issue")
+            raise RuntimeError("Permission issue")
         elif resp.status_code == 500:
             logging.error("Server side error, please report this to XBOW")
-            raise Exception("Server Side Error")
+            raise RuntimeError("Server Side Error")
         elif resp.status_code == 429:
             logging.warning("Rate limit exceeded")
-            return False
-        return resp.status_code == 200
+            raise RuntimeError("Rate limit exceeded")
+
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            raise RuntimeError("XBOW API request failed") from exc
+
+        return True
 
     def _paginate(
-        self, url: str, params: dict | None = None
-    ) -> Generator[dict, None, None]:
+        self, url: str, params: dict[str, Any] | None = None
+    ) -> Generator[dict[str, Any], None, None]:
         """Cursor-based pagination over a XBOW list endpoint, yielding each item."""
         cursor = None
         while True:
@@ -232,7 +244,7 @@ class XbowClient:
         resp = self.session.get(f"{self.base}/meta/addresses", timeout=30)
         return self._check_response(resp)
 
-    def fetch_finding_detail(self, finding_id: str) -> dict:
+    def fetch_finding_detail(self, finding_id: str) -> dict[str, Any]:
         """Fetch the full finding record including evidence, recipe, and mitigations."""
         resp = self.session.get(
             f"{self.base}/findings/{finding_id}",
@@ -241,7 +253,7 @@ class XbowClient:
         self._check_response(resp)
         return resp.json()
 
-    def fetch_asset_detail(self, asset_id: str) -> dict:
+    def fetch_asset_detail(self, asset_id: str) -> dict[str, Any]:
         """Fetch full details for a specific asset."""
         resp = self.session.get(
             f"{self.base}/assets/{asset_id}",
@@ -250,7 +262,7 @@ class XbowClient:
         self._check_response(resp)
         return resp.json()
 
-    def fetch_assessment_detail(self, assessment_id: str) -> dict:
+    def fetch_assessment_detail(self, assessment_id: str) -> dict[str, Any]:
         """Fetch the full assessment record including attackCredits and recentEvents."""
         resp = self.session.get(
             f"{self.base}/assessments/{assessment_id}",
@@ -259,20 +271,24 @@ class XbowClient:
         self._check_response(resp)
         return resp.json()
 
-    def list_assets(self, org_id: str | None = None) -> list[dict]:
+    def list_assets(self, org_id: str | None = None) -> list[dict[str, Any]]:
         """Return all assets for the organization."""
         org_id = org_id or self.org_id
         return list(self._paginate(f"{self.base}/organizations/{org_id}/assets"))
 
-    def list_asset_findings(self, asset_id: str) -> Generator[dict, None, None]:
+    def list_asset_findings(
+        self, asset_id: str
+    ) -> Generator[dict[str, Any], None, None]:
         """Yield findings for an asset."""
         yield from self._paginate(f"{self.base}/assets/{asset_id}/findings")
 
-    def list_asset_assessments(self, asset_id: str) -> Generator[dict, None, None]:
+    def list_asset_assessments(
+        self, asset_id: str
+    ) -> Generator[dict[str, Any], None, None]:
         """Yield assessments for an asset."""
         yield from self._paginate(f"{self.base}/assets/{asset_id}/assessments")
 
-    def safe_asset_payload(self, asset: dict) -> dict:
+    def safe_asset_payload(self, asset: dict[str, Any]) -> dict[str, Any]:
         """Return a copy of an asset payload with sensitive fields removed."""
         safe = dict(asset or {})
         safe.pop("credentials", None)
@@ -282,24 +298,28 @@ class XbowClient:
 def collect_finding_events(
     xbow: XbowClient,
     org_id: str,
-    assets: list[dict],
+    assets: list[dict[str, Any]],
     last_seen: dict[str, str],
-) -> tuple[list[dict], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """
     For each asset, fetch findings where updatedAt > last_seen[asset_id].
     Returns (new_events, updated_last_seen).
     """
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     new_last_seen: dict[str, str] = dict(last_seen)
 
     for asset in assets:
-        asset_id = asset["id"]
-        asset_name = asset["name"]
+        asset_id = asset.get("id")
+        if not asset_id:
+            continue
+        asset_name = asset.get("name", "")
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
         for finding in xbow.list_asset_findings(asset_id):
-            finding_id = finding["id"]
+            finding_id = finding.get("id")
+            if not finding_id:
+                continue
             record_ts = finding.get("updatedAt") or finding.get("createdAt")
 
             if not _is_newer(record_ts, asset_last):
@@ -316,9 +336,10 @@ def collect_finding_events(
                 )
                 detail = finding
 
+            event_ts = detail.get("updatedAt") or detail.get("createdAt") or record_ts
             events.append(
                 {
-                    "TimeGenerated": detail.get("updatedAt") or detail.get("createdAt"),
+                    "TimeGenerated": event_ts,
                     "FindingId": detail.get("id", ""),
                     "FindingName": detail.get("name", ""),
                     "Severity": detail.get("severity", ""),
@@ -335,7 +356,7 @@ def collect_finding_events(
                 }
             )
 
-            asset_max_ts = _max_ts(asset_max_ts, record_ts)
+            asset_max_ts = _max_ts(asset_max_ts, event_ts)
 
         if asset_max_ts:
             new_last_seen[asset_id] = asset_max_ts
@@ -346,15 +367,15 @@ def collect_finding_events(
 def collect_asset_events(
     xbow: XbowClient,
     org_id: str,
-    assets: list[dict],
+    assets: list[dict[str, Any]],
     last_seen: dict[str, str],
-) -> tuple[list[dict], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """
     For each asset from the organization list endpoint, fetch GET /assets/{assetId}
     when updatedAt > last_seen[asset_id], and emit a sanitized JSON snapshot event.
     Returns (new_events, updated_last_seen).
     """
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     new_last_seen: dict[str, str] = dict(last_seen)
 
     for asset in assets:
@@ -381,12 +402,13 @@ def collect_asset_events(
         safe_detail = xbow.safe_asset_payload(detail)
         checks = safe_detail.get("checks") or {}
         asset_reachable = checks.get("assetReachable") or {}
+        event_ts = (
+            safe_detail.get("updatedAt") or safe_detail.get("createdAt") or record_ts
+        )
 
         events.append(
             {
-                "TimeGenerated": safe_detail.get("updatedAt")
-                or safe_detail.get("createdAt")
-                or record_ts,
+                "TimeGenerated": event_ts,
                 "AssetId": safe_detail.get("id", asset_id),
                 "AssetName": safe_detail.get("name", ""),
                 "Lifecycle": safe_detail.get("lifecycle", ""),
@@ -409,8 +431,8 @@ def collect_asset_events(
             }
         )
 
-        if record_ts:
-            new_last_seen[asset_id] = record_ts
+        if event_ts:
+            new_last_seen[asset_id] = event_ts
 
     return events, new_last_seen
 
@@ -418,9 +440,9 @@ def collect_asset_events(
 def collect_assessment_events(
     xbow: XbowClient,
     org_id: str,
-    assets: list[dict],
+    assets: list[dict[str, Any]],
     last_seen: dict[str, str],
-) -> tuple[list[dict], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """
     For each asset, fetch assessments where updatedAt > last_seen[asset_id].
     Returns (new_events, updated_last_seen).
@@ -428,17 +450,21 @@ def collect_assessment_events(
     Includes recentEvents (state-change history: started/paused/resumed/cancelled)
     serialised as a JSON string for use in KQL queries.
     """
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
     new_last_seen: dict[str, str] = dict(last_seen)
 
     for asset in assets:
-        asset_id = asset["id"]
-        asset_name = asset["name"]
+        asset_id = asset.get("id")
+        if not asset_id:
+            continue
+        asset_name = asset.get("name", "")
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
         for assessment in xbow.list_asset_assessments(asset_id):
-            assessment_id = assessment["id"]
+            assessment_id = assessment.get("id")
+            if not assessment_id:
+                continue
             record_ts = assessment.get("updatedAt") or assessment.get("createdAt")
 
             if not _is_newer(record_ts, asset_last):
@@ -455,9 +481,10 @@ def collect_assessment_events(
                 )
                 detail = assessment
 
+            event_ts = detail.get("updatedAt") or detail.get("createdAt") or record_ts
             events.append(
                 {
-                    "TimeGenerated": detail.get("updatedAt") or detail.get("createdAt"),
+                    "TimeGenerated": event_ts,
                     "AssessmentId": detail.get("id", ""),
                     "AssessmentName": detail.get("name", ""),
                     "State": detail.get("state", ""),
@@ -471,7 +498,7 @@ def collect_assessment_events(
                 }
             )
 
-            asset_max_ts = _max_ts(asset_max_ts, record_ts)
+            asset_max_ts = _max_ts(asset_max_ts, event_ts)
 
         if asset_max_ts:
             new_last_seen[asset_id] = asset_max_ts
@@ -482,7 +509,7 @@ def collect_assessment_events(
 def _ingest_batched(
     client: LogsIngestionClient,
     stream: str,
-    events: list[dict],
+    events: list[dict[str, Any]],
 ) -> None:
     """
     Upload events to Sentinel in batches of INGEST_BATCH_SIZE.
@@ -553,7 +580,7 @@ def main(mytimer: func.TimerRequest) -> None:
     xbow = XbowClient(org_id=XBOW_ORG_ID, token=XBOW_API_TOKEN, base=XBOW_API_BASE)
 
     if not xbow.check_api():
-        logging.error(f"API check failed, please check the configuration")
+        logging.error("API check failed, please check the configuration")
         return
 
     logging.info(f"{logs_prefix}: Listing all assets for org {XBOW_ORG_ID}...")
@@ -621,6 +648,9 @@ def main(mytimer: func.TimerRequest) -> None:
         )
         raise
 
+    state.assets = new_assets_last_seen
+    state.findings = new_findings_last_seen
+    state.assessments = new_assessments_last_seen
     state.save_state()
 
     elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
