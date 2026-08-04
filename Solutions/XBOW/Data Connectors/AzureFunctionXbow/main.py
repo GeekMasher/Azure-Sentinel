@@ -42,37 +42,34 @@ from azure.monitor.ingestion import LogsIngestionClient
 from azure.core.exceptions import HttpResponseError, ClientAuthenticationError
 from azure.storage.blob import BlobServiceClient, BlobClient
 
-# ---------------------------------------------------------------------------
-# Configuration from Application Settings
-# ---------------------------------------------------------------------------
-TENANT_ID               = os.environ.get("TENANT_ID")
-CLIENT_ID               = os.environ.get("CLIENT_ID")
-CLIENT_SECRET           = os.environ.get("CLIENT_SECRET")
-DCE_ENDPOINT            = os.environ.get("DCE_ENDPOINT")
-DCR_ID                  = os.environ.get("DCR_ID")
-ASSETS_STREAM_NAME      = os.environ.get("ASSETS_STREAM_NAME", "Custom-XbowAssets_CL")
-FINDINGS_STREAM_NAME    = os.environ.get("FINDINGS_STREAM_NAME", "Custom-XbowFindings_CL")
-ASSESSMENTS_STREAM_NAME = os.environ.get("ASSESSMENTS_STREAM_NAME", "Custom-XbowAssessments_CL")
-XBOW_API_TOKEN          = os.environ.get("XBOW_API_TOKEN")
-XBOW_ORG_ID             = os.environ.get("XBOW_ORG_ID")
-STORAGE_CONN_STR        = os.environ.get("AzureWebJobsStorage")
 
-__version__ = "1.2"
+__version__ = "1.3"
 
-XBOW_API_BASE    = "https://console.xbow.com/api/v1"
-XBOW_API_VERSION = "2026-07-01"
-PAGE_SIZE        = 100
-INGEST_BATCH_SIZE = 500          # max records per upload() call
-STATE_CONTAINER  = "xbow-connector-state"
-STATE_BLOB       = "sync_state.json"
+TENANT_ID = os.environ.get("TENANT_ID")
+CLIENT_ID = os.environ.get("CLIENT_ID")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET")
+DCE_ENDPOINT = os.environ.get("DCE_ENDPOINT")
+DCR_ID = os.environ.get("DCR_ID")
+ASSETS_STREAM_NAME = os.environ.get("ASSETS_STREAM_NAME", "Custom-XbowAssets_CL")
+FINDINGS_STREAM_NAME = os.environ.get("FINDINGS_STREAM_NAME", "Custom-XbowFindings_CL")
+ASSESSMENTS_STREAM_NAME = os.environ.get(
+    "ASSESSMENTS_STREAM_NAME", "Custom-XbowAssessments_CL"
+)
+STORAGE_CONN_STR = os.environ.get("AzureWebJobsStorage")
 
-logs_prefix   = "XbowConnector"
+# XBOW Settings
+XBOW_API_BASE = os.environ.get("XBOW_API_BASE", "https://console.xbow.com/api/v1")
+XBOW_API_VERSION = os.environ.get("XBOW_API_VERSION", "2026-08-01")
+XBOW_API_TOKEN = os.environ.get("XBOW_API_TOKEN")
+XBOW_ORG_ID = os.environ.get("XBOW_ORG_ID")
+
+PAGE_SIZE = 100
+INGEST_BATCH_SIZE = 500  # max records per upload() call
+STATE_CONTAINER = "xbow-connector-state"
+STATE_BLOB = "sync_state.json"
+
+logs_prefix = "XbowConnector"
 function_name = "main"
-
-
-# ---------------------------------------------------------------------------
-# State persistence helpers (Azure Blob Storage)
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -109,7 +106,9 @@ class SyncState:
                 assessments=raw.get("assessments", {}),
             )
         except Exception as exc:
-            logging.info(f"{logs_prefix}: No existing sync state found (first run or error: {exc}). Starting fresh.")
+            logging.info(
+                f"{logs_prefix}: No existing sync state found (first run or error: {exc}). Starting fresh."
+            )
             return SyncState()
 
     def save_state(self) -> None:
@@ -119,7 +118,9 @@ class SyncState:
             blob.upload_blob(json.dumps(asdict(self), indent=2), overwrite=True)
             logging.info(f"{logs_prefix}: Sync state saved to blob storage.")
         except Exception as exc:
-            logging.error(f"{logs_prefix}: Failed to save sync state: {exc}. State will not persist across runs.")
+            logging.error(
+                f"{logs_prefix}: Failed to save sync state: {exc}. State will not persist across runs."
+            )
 
 
 def _parse_ts(ts: str | None) -> datetime | None:
@@ -161,94 +162,117 @@ def _max_ts(a: str | None, b: str | None) -> str | None:
     return a if da >= db else b
 
 
-# ---------------------------------------------------------------------------
-# XBOW API helpers
-# ---------------------------------------------------------------------------
+class XbowClient:
+    """XBOW API Client"""
 
-def _xbow_headers() -> dict:
-    return {
-        "User-Agent": f"XBOW-Sentinel-Connector/{__version__}",
-        "Authorization": f"Bearer {XBOW_API_TOKEN}",
-        "X-XBOW-API-Version": XBOW_API_VERSION,
-    }
+    def __init__(
+        self,
+        org_id: str,
+        token: str,
+        base: str | None = XBOW_API_BASE,
+        api_version: str | None = XBOW_API_VERSION,
+    ) -> None:
+        """Initialise the XBOW Client"""
+        self.org_id = org_id
+        self.token = token
+        self.api_version = api_version
 
+        self.base = base or "https://console.xbow.com/api/v1"
+        if not self.base.endswith("/api/v1"):
+            self.base += "/api/v1"
+        logging.info(f"Base URL :: {self.base}")
 
-def _check_response(resp: requests.Response) -> None:
-    """Raise immediately on 400 Bad Request; otherwise delegate to raise_for_status."""
-    if resp.status_code == 400:
-        raise RuntimeError(
-            f"XBOW API returned 400 Bad Request for {resp.url}: {resp.text}"
+        self.session = requests.Session()
+        self.session.headers = {
+            "User-Agent": f"XBOW-Sentinel-Connector/{__version__}",
+            "Authorization": f"Bearer {self.token}",
+            "X-XBOW-API-Version": self.api_version,
+        }
+
+    def _check_response(self, resp: requests.Response) -> bool:
+        """Raise immediately on 400 Bad Request; otherwise delegate to raise_for_status."""
+        if resp.status_code == 400:
+            logging.error(
+                "API version is out of date, please update the XBOW_API_VERSION"
+            )
+            raise Exception("Bad Request")
+        elif resp.status_code in [401, 403]:
+            logging.error(
+                "Permissions issue, make sure the XBOW_API_TOKEN and XBOW_ORG_ID match"
+            )
+            raise Exception("Permission issue")
+        elif resp.status_code == 500:
+            logging.error("Server side error, please report this to XBOW")
+            raise Exception("Server Side Error")
+        elif resp.status_code == 429:
+            logging.warning("Rate limit exceeded")
+            return False
+        return resp.status_code == 200
+
+    def _paginate(
+        self, url: str, params: dict | None = None
+    ) -> Generator[dict, None, None]:
+        """Cursor-based pagination over a XBOW list endpoint, yielding each item."""
+        cursor = None
+        while True:
+            p = {**(params or {}), "limit": PAGE_SIZE}
+            if cursor:
+                p["after"] = cursor
+            resp = self.session.get(url, params=p, timeout=30)
+            self._check_response(resp)
+            data = resp.json()
+            for item in data.get("items", []):
+                yield item
+            cursor = data.get("nextCursor")
+            if not cursor:
+                break
+
+    def check_api(self) -> bool:
+        """Check the API to make sure everything is correct"""
+        resp = self.session.get(f"{self.base}/meta/addresses", timeout=30)
+        return self._check_response(resp)
+
+    def fetch_finding_detail(self, finding_id: str) -> dict:
+        """Fetch the full finding record including evidence, recipe, and mitigations."""
+        resp = self.session.get(
+            f"{self.base}/findings/{finding_id}",
+            timeout=30,
         )
-    resp.raise_for_status()
+        self._check_response(resp)
+        return resp.json()
 
+    def fetch_asset_detail(self, asset_id: str) -> dict:
+        """Fetch full details for a specific asset."""
+        resp = self.session.get(
+            f"{self.base}/assets/{asset_id}",
+            timeout=30,
+        )
+        self._check_response(resp)
+        return resp.json()
 
-def _paginate(url: str, params: dict | None = None) -> Generator[dict, None, None]:
-    """Cursor-based pagination over a XBOW list endpoint, yielding each item."""
-    cursor = None
-    while True:
-        p = {**(params or {}), "limit": PAGE_SIZE}
-        if cursor:
-            p["after"] = cursor
-        resp = requests.get(url, headers=_xbow_headers(), params=p, timeout=30)
-        _check_response(resp)
-        data = resp.json()
-        for item in data.get("items", []):
-            yield item
-        cursor = data.get("nextCursor")
-        if not cursor:
-            break
+    def fetch_assessment_detail(self, assessment_id: str) -> dict:
+        """Fetch the full assessment record including attackCredits and recentEvents."""
+        resp = self.session.get(
+            f"{self.base}/assessments/{assessment_id}",
+            timeout=30,
+        )
+        self._check_response(resp)
+        return resp.json()
 
+    def list_assets(self, org_id: str | None = None) -> list[dict]:
+        """Return all assets for the organization."""
+        org_id = org_id or self.org_id
+        return list(self._paginate(f"{self.base}/organizations/{org_id}/assets"))
 
-def _fetch_finding_detail(finding_id: str) -> dict:
-    """Fetch the full finding record including evidence, recipe, and mitigations."""
-    resp = requests.get(
-        f"{XBOW_API_BASE}/findings/{finding_id}",
-        headers=_xbow_headers(),
-        timeout=30,
-    )
-    _check_response(resp)
-    return resp.json()
+    def safe_asset_payload(self, asset: dict) -> dict:
+        """Return a copy of an asset payload with sensitive fields removed."""
+        safe = dict(asset or {})
+        safe.pop("credentials", None)
+        return safe
 
-
-def _fetch_asset_detail(asset_id: str) -> dict:
-    """Fetch full details for a specific asset."""
-    resp = requests.get(
-        f"{XBOW_API_BASE}/assets/{asset_id}",
-        headers=_xbow_headers(),
-        timeout=30,
-    )
-    _check_response(resp)
-    return resp.json()
-
-
-def _fetch_assessment_detail(assessment_id: str) -> dict:
-    """Fetch the full assessment record including attackCredits and recentEvents."""
-    resp = requests.get(
-        f"{XBOW_API_BASE}/assessments/{assessment_id}",
-        headers=_xbow_headers(),
-        timeout=30,
-    )
-    _check_response(resp)
-    return resp.json()
-
-
-def _list_assets(org_id: str) -> list[dict]:
-    """Return all assets for the organization."""
-    return list(_paginate(f"{XBOW_API_BASE}/organizations/{org_id}/assets"))
-
-
-def _safe_asset_payload(asset: dict) -> dict:
-    """Return a copy of an asset payload with sensitive fields removed."""
-    safe = dict(asset or {})
-    safe.pop("credentials", None)
-    return safe
-
-
-# ---------------------------------------------------------------------------
-# Event builders with incremental diff
-# ---------------------------------------------------------------------------
 
 def collect_finding_events(
+    xbow: XbowClient,
     org_id: str,
     assets: list[dict],
     last_seen: dict[str, str],
@@ -261,20 +285,20 @@ def collect_finding_events(
     new_last_seen: dict[str, str] = dict(last_seen)
 
     for asset in assets:
-        asset_id   = asset["id"]
+        asset_id = asset["id"]
         asset_name = asset["name"]
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
-        for finding in _paginate(f"{XBOW_API_BASE}/assets/{asset_id}/findings"):
+        for finding in xbow._paginate(f"{XBOW_API_BASE}/assets/{asset_id}/findings"):
             finding_id = finding["id"]
-            record_ts  = finding.get("updatedAt") or finding.get("createdAt")
+            record_ts = finding.get("updatedAt") or finding.get("createdAt")
 
             if not _is_newer(record_ts, asset_last):
                 continue  # already ingested on a previous run
 
             try:
-                detail = _fetch_finding_detail(finding_id)
+                detail = xbow.fetch_finding_detail(finding_id)
             except RuntimeError:
                 raise
             except Exception as exc:
@@ -284,22 +308,24 @@ def collect_finding_events(
                 )
                 detail = finding
 
-            events.append({
-                "TimeGenerated":  detail.get("updatedAt") or detail.get("createdAt"),
-                "FindingId":      detail.get("id", ""),
-                "FindingName":    detail.get("name", ""),
-                "Severity":       detail.get("severity", ""),
-                "State":          detail.get("state", ""),
-                "Summary":        (detail.get("summary") or "")[:32000],
-                "Evidence":       (detail.get("evidence") or "")[:32000],
-                "Impact":         (detail.get("impact") or "")[:8000],
-                "Mitigations":    (detail.get("mitigations") or "")[:8000],
-                "Recipe":         (detail.get("recipe") or "")[:32000],
-                "AssetId":        asset_id,
-                "AssetName":      asset_name,
-                "OrganizationId": org_id,
-                "CreatedAt":      detail.get("createdAt", ""),
-            })
+            events.append(
+                {
+                    "TimeGenerated": detail.get("updatedAt") or detail.get("createdAt"),
+                    "FindingId": detail.get("id", ""),
+                    "FindingName": detail.get("name", ""),
+                    "Severity": detail.get("severity", ""),
+                    "State": detail.get("state", ""),
+                    "Summary": (detail.get("summary") or "")[:32000],
+                    "Evidence": (detail.get("evidence") or "")[:32000],
+                    "Impact": (detail.get("impact") or "")[:8000],
+                    "Mitigations": (detail.get("mitigations") or "")[:8000],
+                    "Recipe": (detail.get("recipe") or "")[:32000],
+                    "AssetId": asset_id,
+                    "AssetName": asset_name,
+                    "OrganizationId": org_id,
+                    "CreatedAt": detail.get("createdAt", ""),
+                }
+            )
 
             asset_max_ts = _max_ts(asset_max_ts, record_ts)
 
@@ -310,6 +336,7 @@ def collect_finding_events(
 
 
 def collect_asset_events(
+    xbow: XbowClient,
     org_id: str,
     assets: list[dict],
     last_seen: dict[str, str],
@@ -333,7 +360,7 @@ def collect_asset_events(
             continue
 
         try:
-            detail = _fetch_asset_detail(asset_id)
+            detail = xbow.fetch_asset_detail(asset_id)
         except RuntimeError:
             raise
         except Exception as exc:
@@ -343,30 +370,36 @@ def collect_asset_events(
             )
             detail = asset
 
-        safe_detail = _safe_asset_payload(detail)
+        safe_detail = xbow.safe_asset_payload(detail)
         checks = safe_detail.get("checks") or {}
         asset_reachable = checks.get("assetReachable") or {}
 
-        events.append({
-            "TimeGenerated":          safe_detail.get("updatedAt") or safe_detail.get("createdAt") or record_ts,
-            "AssetId":                safe_detail.get("id", asset_id),
-            "AssetName":              safe_detail.get("name", ""),
-            "Lifecycle":              safe_detail.get("lifecycle", ""),
-            "OrganizationId":         safe_detail.get("organizationId", org_id),
-            "StartUrl":               (safe_detail.get("startUrl") or "")[:2048],
-            "Sku":                    safe_detail.get("sku", ""),
-            "MaxRequestsPerSecond":   safe_detail.get("maxRequestsPerSecond") or 0,
-            "CreatedAt":              safe_detail.get("createdAt", ""),
-            "UpdatedAt":              safe_detail.get("updatedAt", ""),
-            "AssetReachableState":    asset_reachable.get("state", ""),
-            "AssetReachableMessage":  (asset_reachable.get("message") or "")[:4000],
-            "Checks":                 json.dumps(checks),
-            "ApprovedTimeWindows":    json.dumps(safe_detail.get("approvedTimeWindows")),
-            "DnsBoundaryRules":       json.dumps(safe_detail.get("dnsBoundaryRules")),
-            "HttpBoundaryRules":      json.dumps(safe_detail.get("httpBoundaryRules")),
-            "Headers":                json.dumps(safe_detail.get("headers")),
-            "RawAsset":               json.dumps(safe_detail)[:32000],
-        })
+        events.append(
+            {
+                "TimeGenerated": safe_detail.get("updatedAt")
+                or safe_detail.get("createdAt")
+                or record_ts,
+                "AssetId": safe_detail.get("id", asset_id),
+                "AssetName": safe_detail.get("name", ""),
+                "Lifecycle": safe_detail.get("lifecycle", ""),
+                "OrganizationId": safe_detail.get("organizationId", org_id),
+                "StartUrl": (safe_detail.get("startUrl") or "")[:2048],
+                "Sku": safe_detail.get("sku", ""),
+                "MaxRequestsPerSecond": safe_detail.get("maxRequestsPerSecond") or 0,
+                "CreatedAt": safe_detail.get("createdAt", ""),
+                "UpdatedAt": safe_detail.get("updatedAt", ""),
+                "AssetReachableState": asset_reachable.get("state", ""),
+                "AssetReachableMessage": (asset_reachable.get("message") or "")[:4000],
+                "Checks": json.dumps(checks),
+                "ApprovedTimeWindows": json.dumps(
+                    safe_detail.get("approvedTimeWindows")
+                ),
+                "DnsBoundaryRules": json.dumps(safe_detail.get("dnsBoundaryRules")),
+                "HttpBoundaryRules": json.dumps(safe_detail.get("httpBoundaryRules")),
+                "Headers": json.dumps(safe_detail.get("headers")),
+                "RawAsset": json.dumps(safe_detail)[:32000],
+            }
+        )
 
         if record_ts:
             new_last_seen[asset_id] = record_ts
@@ -375,6 +408,7 @@ def collect_asset_events(
 
 
 def collect_assessment_events(
+    xbow: XbowClient,
     org_id: str,
     assets: list[dict],
     last_seen: dict[str, str],
@@ -390,12 +424,14 @@ def collect_assessment_events(
     new_last_seen: dict[str, str] = dict(last_seen)
 
     for asset in assets:
-        asset_id   = asset["id"]
+        asset_id = asset["id"]
         asset_name = asset["name"]
         asset_last = last_seen.get(asset_id)
         asset_max_ts = asset_last
 
-        for assessment in _paginate(f"{XBOW_API_BASE}/assets/{asset_id}/assessments"):
+        for assessment in xbow._paginate(
+            f"{XBOW_API_BASE}/assets/{asset_id}/assessments"
+        ):
             assessment_id = assessment["id"]
             record_ts = assessment.get("updatedAt") or assessment.get("createdAt")
 
@@ -403,7 +439,7 @@ def collect_assessment_events(
                 continue
 
             try:
-                detail = _fetch_assessment_detail(assessment_id)
+                detail = xbow.fetch_assessment_detail(assessment_id)
             except RuntimeError:
                 raise
             except Exception as exc:
@@ -413,19 +449,21 @@ def collect_assessment_events(
                 )
                 detail = assessment
 
-            events.append({
-                "TimeGenerated":   detail.get("updatedAt") or detail.get("createdAt"),
-                "AssessmentId":    detail.get("id", ""),
-                "AssessmentName":  detail.get("name", ""),
-                "State":           detail.get("state", ""),
-                "Progress":        detail.get("progress", 0),
-                "AttackCredits":   detail.get("attackCredits", 0),
-                "RecentEvents":    json.dumps(detail.get("recentEvents") or []),
-                "AssetId":         asset_id,
-                "AssetName":       asset_name,
-                "OrganizationId":  detail.get("organizationId", org_id),
-                "CreatedAt":       detail.get("createdAt", ""),
-            })
+            events.append(
+                {
+                    "TimeGenerated": detail.get("updatedAt") or detail.get("createdAt"),
+                    "AssessmentId": detail.get("id", ""),
+                    "AssessmentName": detail.get("name", ""),
+                    "State": detail.get("state", ""),
+                    "Progress": detail.get("progress", 0),
+                    "AttackCredits": detail.get("attackCredits", 0),
+                    "RecentEvents": json.dumps(detail.get("recentEvents") or []),
+                    "AssetId": asset_id,
+                    "AssetName": asset_name,
+                    "OrganizationId": detail.get("organizationId", org_id),
+                    "CreatedAt": detail.get("createdAt", ""),
+                }
+            )
 
             asset_max_ts = _max_ts(asset_max_ts, record_ts)
 
@@ -434,10 +472,6 @@ def collect_assessment_events(
 
     return events, new_last_seen
 
-
-# ---------------------------------------------------------------------------
-# Ingestion helper (batched upload)
-# ---------------------------------------------------------------------------
 
 def _ingest_batched(
     client: LogsIngestionClient,
@@ -459,14 +493,12 @@ def _ingest_batched(
         batch = events[i : i + INGEST_BATCH_SIZE]
         client.upload(rule_id=DCR_ID, stream_name=stream, logs=batch)
         total += len(batch)
-        logging.info(f"{logs_prefix}: Uploaded batch of {len(batch)} events to '{stream}' ({total}/{len(events)} total).")
+        logging.info(
+            f"{logs_prefix}: Uploaded batch of {len(batch)} events to '{stream}' ({total}/{len(events)} total)."
+        )
 
     logging.info(f"{logs_prefix}: Finished ingesting {total} event(s) → '{stream}'.")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main(mytimer: func.TimerRequest) -> None:
     """Entry point for the timer-triggered Azure Function."""
@@ -476,29 +508,27 @@ def main(mytimer: func.TimerRequest) -> None:
     if mytimer.past_due:
         logging.warning(f"{logs_prefix} {function_name}: Timer is running late!")
 
-    logging.info(f"{logs_prefix} {function_name}: Connector starting at {utc_timestamp}")
+    logging.info(
+        f"{logs_prefix} {function_name}: Connector starting at {utc_timestamp}"
+    )
 
-    # ------------------------------------------------------------------
-    # 1. Validate required application settings
-    # ------------------------------------------------------------------
-    missing = [k for k, v in {
-        "XBOW_API_TOKEN":    XBOW_API_TOKEN,
-        "XBOW_ORG_ID":       XBOW_ORG_ID,
-        "TENANT_ID":         TENANT_ID,
-        "CLIENT_ID":         CLIENT_ID,
-        "CLIENT_SECRET":     CLIENT_SECRET,
-        "DCE_ENDPOINT":      DCE_ENDPOINT,
-        "DCR_ID":            DCR_ID,
-        "AzureWebJobsStorage": STORAGE_CONN_STR,
-    }.items() if not v]
+    missing = [
+        k
+        for k, v in {
+            "TENANT_ID": TENANT_ID,
+            "CLIENT_ID": CLIENT_ID,
+            "CLIENT_SECRET": CLIENT_SECRET,
+            "DCE_ENDPOINT": DCE_ENDPOINT,
+            "DCR_ID": DCR_ID,
+            "AzureWebJobsStorage": STORAGE_CONN_STR,
+        }.items()
+        if not v
+    ]
     if missing:
         raise EnvironmentError(
             f"{logs_prefix}: Missing required app settings: {', '.join(missing)}"
         )
 
-    # ------------------------------------------------------------------
-    # 2. Load persisted sync state
-    # ------------------------------------------------------------------
     state = SyncState.load_state()
 
     logging.info(
@@ -508,43 +538,46 @@ def main(mytimer: func.TimerRequest) -> None:
         f"{len(state.assessments)} for assessments."
     )
 
-    # ------------------------------------------------------------------
-    # 3. Enumerate all assets (single pass, reused for both data types)
-    # ------------------------------------------------------------------
+    if not XBOW_ORG_ID:
+        raise EnvironmentError("Missing XBOW_ORG_ID")
+    if not XBOW_API_TOKEN:
+        raise EnvironmentError("Missing XBOW_API_TOKEN")
+
+    # Setup XBOW Client
+    xbow = XbowClient(org_id=XBOW_ORG_ID, token=XBOW_API_TOKEN, base=XBOW_API_BASE)
+
+    if not xbow.check_api():
+        logging.error(f"API check failed, please check the configuration")
+        return
+
     logging.info(f"{logs_prefix}: Listing all assets for org {XBOW_ORG_ID}...")
-    assets = _list_assets(XBOW_ORG_ID)
+    assets = xbow.list_assets(XBOW_ORG_ID)
     logging.info(f"{logs_prefix}: Found {len(assets)} asset(s).")
 
-    # ------------------------------------------------------------------
-    # 4. Collect new/changed asset snapshots
-    # ------------------------------------------------------------------
     logging.info(f"{logs_prefix}: Collecting new/changed asset snapshots...")
     asset_events, new_assets_last_seen = collect_asset_events(
-        XBOW_ORG_ID, assets, state.assets
+        xbow, XBOW_ORG_ID, assets, state.assets
     )
-    logging.info(f"{logs_prefix}: {len(asset_events)} new/changed asset snapshot(s) to ingest.")
+    logging.info(
+        f"{logs_prefix}: {len(asset_events)} new/changed asset snapshot(s) to ingest."
+    )
 
-    # ------------------------------------------------------------------
-    # 5. Collect new/changed findings (with full enrichment)
-    # ------------------------------------------------------------------
     logging.info(f"{logs_prefix}: Collecting new/changed findings...")
     finding_events, new_findings_last_seen = collect_finding_events(
-        XBOW_ORG_ID, assets, state.findings
+        xbow, XBOW_ORG_ID, assets, state.findings
     )
-    logging.info(f"{logs_prefix}: {len(finding_events)} new/changed finding(s) to ingest.")
+    logging.info(
+        f"{logs_prefix}: {len(finding_events)} new/changed finding(s) to ingest."
+    )
 
-    # ------------------------------------------------------------------
-    # 6. Collect new/changed assessments
-    # ------------------------------------------------------------------
     logging.info(f"{logs_prefix}: Collecting new/changed assessments...")
     assessment_events, new_assessments_last_seen = collect_assessment_events(
-        XBOW_ORG_ID, assets, state.assessments
+        xbow, XBOW_ORG_ID, assets, state.assessments
     )
-    logging.info(f"{logs_prefix}: {len(assessment_events)} new/changed assessment(s) to ingest.")
+    logging.info(
+        f"{logs_prefix}: {len(assessment_events)} new/changed assessment(s) to ingest."
+    )
 
-    # ------------------------------------------------------------------
-    # 7. Create Sentinel ingestion client
-    # ------------------------------------------------------------------
     try:
         creds = ClientSecretCredential(
             tenant_id=TENANT_ID,
@@ -559,9 +592,6 @@ def main(mytimer: func.TimerRequest) -> None:
         )
         raise
 
-    # ------------------------------------------------------------------
-    # 8. Ingest to Sentinel
-    # ------------------------------------------------------------------
     try:
         _ingest_batched(ingestion_client, ASSETS_STREAM_NAME, asset_events)
         _ingest_batched(ingestion_client, FINDINGS_STREAM_NAME, finding_events)
@@ -580,12 +610,11 @@ def main(mytimer: func.TimerRequest) -> None:
         )
         raise
     except Exception as exc:
-        logging.error(f"{logs_prefix} {function_name}: Unexpected ingestion error: {exc}")
+        logging.error(
+            f"{logs_prefix} {function_name}: Unexpected ingestion error: {exc}"
+        )
         raise
 
-    # ------------------------------------------------------------------
-    # 9. Persist updated state (only after successful ingest)
-    # ------------------------------------------------------------------
     state.save_state()
 
     elapsed = (datetime.now(timezone.utc) - run_start).total_seconds()
