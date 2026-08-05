@@ -514,11 +514,11 @@
                 "status": "Available",
                 "requiredDataConnectors": [
                   {
-                    "connectorId": "XbowSecurityConnector",
                     "dataTypes": [
                       "XbowFindings_CL",
                       "XbowAssets_CL"
-                    ]
+                    ],
+                    "connectorId": "XbowSecurityConnector"
                   }
                 ],
                 "tactics": [
@@ -533,44 +533,44 @@
                 ],
                 "entityMappings": [
                   {
-                    "entityType": "URL",
                     "fieldMappings": [
                       {
                         "identifier": "Url",
                         "columnName": "StartUrl"
                       }
-                    ]
+                    ],
+                    "entityType": "URL"
                   }
                 ],
                 "eventGroupingSettings": {
                   "aggregationKind": "AlertPerResult"
                 },
                 "customDetails": {
-                  "Severity": "Severity",
                   "FindingID": "FindingId",
-                  "AssetID": "AssetId",
                   "FindingName": "FindingName",
-                  "AssetName": "AssetName",
-                  "State": "State",
                   "Mitigations": "Mitigations",
+                  "Severity": "Severity",
+                  "CreatedAt": "CreatedAt",
+                  "AssetName": "AssetName",
+                  "AssetID": "AssetId",
                   "OrganizationID": "OrganizationId",
-                  "CreatedAt": "CreatedAt"
+                  "State": "State"
                 },
                 "alertDetailsOverride": {
                   "alertDescriptionFormat": "{{Severity}} severity finding on {{AssetName}}. {{Summary}}",
                   "alertDisplayNameFormat": "XBOW {{Severity}}: {{FindingName}}"
                 },
                 "incidentConfiguration": {
-                  "createIncident": true,
                   "groupingConfiguration": {
-                    "enabled": true,
-                    "lookbackDuration": "24h",
                     "reopenClosedIncident": false,
-                    "matchingMethod": "Selected",
                     "groupByCustomDetails": [
                       "FindingID"
-                    ]
-                  }
+                    ],
+                    "lookbackDuration": "24h",
+                    "matchingMethod": "Selected",
+                    "enabled": true
+                  },
+                  "createIncident": true
                 }
               }
             },
@@ -653,11 +653,11 @@
                 "status": "Available",
                 "requiredDataConnectors": [
                   {
-                    "connectorId": "XbowSecurityConnector",
                     "dataTypes": [
                       "XbowFindings_CL",
                       "XbowAssets_CL"
-                    ]
+                    ],
+                    "connectorId": "XbowSecurityConnector"
                   }
                 ],
                 "tactics": [
@@ -667,44 +667,44 @@
                 ],
                 "entityMappings": [
                   {
-                    "entityType": "URL",
                     "fieldMappings": [
                       {
                         "identifier": "Url",
                         "columnName": "StartUrl"
                       }
-                    ]
+                    ],
+                    "entityType": "URL"
                   }
                 ],
                 "eventGroupingSettings": {
                   "aggregationKind": "AlertPerResult"
                 },
                 "customDetails": {
-                  "Severity": "Severity",
                   "FindingID": "FindingId",
-                  "AssetID": "AssetId",
                   "FindingName": "FindingName",
-                  "AssetName": "AssetName",
-                  "State": "State",
                   "Mitigations": "Mitigations",
+                  "Severity": "Severity",
+                  "CreatedAt": "CreatedAt",
+                  "AssetName": "AssetName",
+                  "AssetID": "AssetId",
                   "OrganizationID": "OrganizationId",
-                  "CreatedAt": "CreatedAt"
+                  "State": "State"
                 },
                 "alertDetailsOverride": {
                   "alertDescriptionFormat": "Medium severity finding on asset {{AssetName}} ({{AssetId}}). {{Summary}}",
                   "alertDisplayNameFormat": "XBOW Medium: {{FindingName}}"
                 },
                 "incidentConfiguration": {
-                  "createIncident": true,
                   "groupingConfiguration": {
-                    "enabled": true,
-                    "lookbackDuration": "24h",
                     "reopenClosedIncident": false,
-                    "matchingMethod": "Selected",
                     "groupByCustomDetails": [
                       "FindingID"
-                    ]
-                  }
+                    ],
+                    "lookbackDuration": "24h",
+                    "matchingMethod": "Selected",
+                    "enabled": true
+                  },
+                  "createIncident": true
                 }
               }
             },
@@ -787,11 +787,11 @@
                 "status": "Available",
                 "requiredDataConnectors": [
                   {
-                    "connectorId": "XbowSecurityConnector",
                     "dataTypes": [
                       "XbowFindings_CL",
                       "XbowAssets_CL"
-                    ]
+                    ],
+                    "connectorId": "XbowSecurityConnector"
                   }
                 ],
                 "tactics": [
@@ -799,44 +799,44 @@
                 ],
                 "entityMappings": [
                   {
-                    "entityType": "URL",
                     "fieldMappings": [
                       {
                         "identifier": "Url",
                         "columnName": "StartUrl"
                       }
-                    ]
+                    ],
+                    "entityType": "URL"
                   }
                 ],
                 "eventGroupingSettings": {
                   "aggregationKind": "AlertPerResult"
                 },
                 "customDetails": {
-                  "Severity": "Severity",
                   "FindingID": "FindingId",
-                  "AssetID": "AssetId",
                   "FindingName": "FindingName",
-                  "AssetName": "AssetName",
-                  "State": "State",
                   "Mitigations": "Mitigations",
+                  "Severity": "Severity",
+                  "CreatedAt": "CreatedAt",
+                  "AssetName": "AssetName",
+                  "AssetID": "AssetId",
                   "OrganizationID": "OrganizationId",
-                  "CreatedAt": "CreatedAt"
+                  "State": "State"
                 },
                 "alertDetailsOverride": {
                   "alertDescriptionFormat": "Low severity finding on asset {{AssetName}} ({{AssetId}}). {{Summary}}",
                   "alertDisplayNameFormat": "XBOW Low: {{FindingName}}"
                 },
                 "incidentConfiguration": {
-                  "createIncident": true,
                   "groupingConfiguration": {
-                    "enabled": true,
-                    "lookbackDuration": "24h",
                     "reopenClosedIncident": false,
-                    "matchingMethod": "Selected",
                     "groupByCustomDetails": [
                       "FindingID"
-                    ]
-                  }
+                    ],
+                    "lookbackDuration": "24h",
+                    "matchingMethod": "Selected",
+                    "enabled": true
+                  },
+                  "createIncident": true
                 }
               }
             },
@@ -919,10 +919,10 @@
                 "status": "Available",
                 "requiredDataConnectors": [
                   {
-                    "connectorId": "XbowSecurityConnector",
                     "dataTypes": [
                       "XbowAssets_CL"
-                    ]
+                    ],
+                    "connectorId": "XbowSecurityConnector"
                   }
                 ],
                 "tactics": [
@@ -934,43 +934,43 @@
                 ],
                 "entityMappings": [
                   {
-                    "entityType": "URL",
                     "fieldMappings": [
                       {
                         "identifier": "Url",
                         "columnName": "StartUrl"
                       }
-                    ]
+                    ],
+                    "entityType": "URL"
                   }
                 ],
                 "eventGroupingSettings": {
                   "aggregationKind": "AlertPerResult"
                 },
                 "customDetails": {
-                  "StartUrl": "StartUrl",
-                  "CreatedAt": "CreatedAt",
-                  "Sku": "Sku",
                   "Lifecycle": "Lifecycle",
-                  "AssetName": "AssetName",
                   "AssetID": "AssetId",
+                  "StartUrl": "StartUrl",
+                  "Sku": "Sku",
+                  "CreatedAt": "CreatedAt",
+                  "AssetReachableState": "AssetReachableState",
                   "OrganizationID": "OrganizationId",
-                  "AssetReachableState": "AssetReachableState"
+                  "AssetName": "AssetName"
                 },
                 "alertDetailsOverride": {
                   "alertDescriptionFormat": "New asset registered in XBOW: {{AssetName}} ({{StartUrl}}). Reachability: {{AssetReachableState}}",
                   "alertDisplayNameFormat": "XBOW New Asset: {{AssetName}}"
                 },
                 "incidentConfiguration": {
-                  "createIncident": true,
                   "groupingConfiguration": {
-                    "enabled": true,
-                    "lookbackDuration": "6h",
                     "reopenClosedIncident": false,
-                    "matchingMethod": "Selected",
                     "groupByCustomDetails": [
                       "AssetID"
-                    ]
-                  }
+                    ],
+                    "lookbackDuration": "6h",
+                    "matchingMethod": "Selected",
+                    "enabled": true
+                  },
+                  "createIncident": true
                 }
               }
             },

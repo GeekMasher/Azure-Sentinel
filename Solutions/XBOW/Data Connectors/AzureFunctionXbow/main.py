@@ -198,9 +198,6 @@ class XbowClient:
     def _check_response(self, resp: requests.Response) -> bool:
         """Raise immediately on 400 Bad Request; otherwise delegate to raise_for_status."""
         if resp.status_code == 400:
-            logging.error(
-                "API version is out of date, please update the XBOW_API_VERSION"
-            )
             raise RuntimeError("Bad Request")
         elif resp.status_code in [401, 403]:
             logging.error(
@@ -221,6 +218,27 @@ class XbowClient:
 
         return True
 
+    def _get(self, url: str, params: dict[str, Any] | None = None) -> requests.Response:
+        """
+        GET with a one-time fallback to the "next" API version.
+
+        A 400 on the pinned XBOW_API_VERSION means it's invalid or past its
+        end-of-life; retrying with "next" (always supported, see the XBOW API
+        versioning docs) keeps the connector running until XBOW_API_VERSION is
+        updated, instead of failing outright.
+        """
+        resp = self.session.get(url, params=params, timeout=30)
+        if resp.status_code == 400 and self.api_version != "next":
+            logging.warning(
+                f"XBOW API rejected version '{self.api_version}' with 400; "
+                "retrying with X-XBOW-API-Version: next"
+            )
+            self.api_version = "next"
+            self.session.headers["X-XBOW-API-Version"] = "next"
+            resp = self.session.get(url, params=params, timeout=30)
+        self._check_response(resp)
+        return resp
+
     def _paginate(
         self, url: str, params: dict[str, Any] | None = None
     ) -> Generator[dict[str, Any], None, None]:
@@ -230,8 +248,7 @@ class XbowClient:
             p = {**(params or {}), "limit": PAGE_SIZE}
             if cursor:
                 p["after"] = cursor
-            resp = self.session.get(url, params=p, timeout=30)
-            self._check_response(resp)
+            resp = self._get(url, params=p)
             data = resp.json()
             for item in data.get("items", []):
                 yield item
@@ -241,34 +258,22 @@ class XbowClient:
 
     def check_api(self) -> bool:
         """Check the API to make sure everything is correct"""
-        resp = self.session.get(f"{self.base}/meta/addresses", timeout=30)
-        return self._check_response(resp)
+        self._get(f"{self.base}/meta/addresses")
+        return True
 
     def fetch_finding_detail(self, finding_id: str) -> dict[str, Any]:
         """Fetch the full finding record including evidence, recipe, and mitigations."""
-        resp = self.session.get(
-            f"{self.base}/findings/{finding_id}",
-            timeout=30,
-        )
-        self._check_response(resp)
+        resp = self._get(f"{self.base}/findings/{finding_id}")
         return resp.json()
 
     def fetch_asset_detail(self, asset_id: str) -> dict[str, Any]:
         """Fetch full details for a specific asset."""
-        resp = self.session.get(
-            f"{self.base}/assets/{asset_id}",
-            timeout=30,
-        )
-        self._check_response(resp)
+        resp = self._get(f"{self.base}/assets/{asset_id}")
         return resp.json()
 
     def fetch_assessment_detail(self, assessment_id: str) -> dict[str, Any]:
         """Fetch the full assessment record including attackCredits and recentEvents."""
-        resp = self.session.get(
-            f"{self.base}/assessments/{assessment_id}",
-            timeout=30,
-        )
-        self._check_response(resp)
+        resp = self._get(f"{self.base}/assessments/{assessment_id}")
         return resp.json()
 
     def list_assets(self, org_id: str | None = None) -> list[dict[str, Any]]:
